@@ -5,17 +5,14 @@ This is the main Triplify script.
 @license LGPL
 @copyright 2008 Remon Georgy (remon.sherin@gmail.com)
 """
-#TODO error_reporting(E_ALL ^ E_NOTICE)
 
 import hashlib
 import re
 import urllib
 import simplejson as json
-import datetime
 import config
-import sys
+import time
 
-from mod_python import apache
 from mod_python import util
 from config import triplify
 from os import path
@@ -25,19 +22,25 @@ baseURI = ''
 serverURI = ''
 restPath = ''
 requestURI = ''
+buffered = False 
 
 class Tripleizer:
     maxResults = 0
     json = {}
     version = 'V0.4'
     typed = {}
+    output = ''
+    
     
     def __init__(self, tConfig, req):
+        """ Constructor
+        tConfig -- Array of configuration parameters
+        req -- apache's request obect
+        """
         global restPath
         if('db' in tConfig):
             self.db = tConfig['db']
             self.cursor = self.db.cursor()
-            # TODO self.pdo.setAttribute(eval('return PDO::MYSQL_ATTR_USE_BUFFERED_QUERY'),true)
             self.config = tConfig
             self.ns = tConfig.get('namespaces','')
             self.objectProperties  = tConfig.get('objectProperties', None)
@@ -49,8 +52,14 @@ class Tripleizer:
             req.write('DB configuration is missing')
             raise Exception
     
+        
+    def bufWrite(self, message, req):
+        if(triplify.has_key('TTL')):
+            self.output += message
+        else:
+            req.write(message)
+        
     def tripleize(self, queries, c=None, idN=None):
-        #TODO static typed
         global serverURI, requestURI
         selfURI = serverURI + requestURI
         self.writeTriple(selfURI, self.uri('owl:imports'),self.ns.get('vocabulary',''))
@@ -126,7 +135,6 @@ class Tripleizer:
                 oa['datatype'] = dtype
             elif isLiteral and lang:
                 oa['language'] = lang
-                
             if ( subject in self.json and predicate in self.json[subject]):
                 self.json[subject][predicate].update(oa)
             else:
@@ -136,8 +144,8 @@ class Tripleizer:
                 objectN = '"'+objectN.replace('\\','\\\\').replace("\r", '\r').replace("\n", '\n').replace('"', '\"')+'"'+ ('^^<'+dtype+'>' if dtype else ('@'+lang if lang else ''))
             else:
                 objectN = '<'+objectN+'>'
-            self.req.write('<'+subject+'> <'+predicate+'> '+objectN+' .\n')
-    
+            self.bufWrite('<'+subject+'> <'+predicate+'> '+objectN+' .\n', self.req)
+            
     def dbResultMap(self, result):
         return list([(d[0], value) for d, value in zip(self.curDesc, result)])
             
@@ -205,14 +213,12 @@ class Tripleizer:
                 dtype = None
                 lang = None
                 if p.find('^^') > -1: 
-                    # TODO
                     dtype = self.uri(p[p.find('^^'):][2:])
                     p = p[:p.find('^')]
                 elif(dtypes.get(p, None)): 
                     dtype=self.uri(dtypes[p])
                 elif(p.find('@') > -1): 
                     lang =p[p.find('.'):][1:]
-                    # TODO
                     p= p[:p.find('@')]
     
                 if(p.find('.') > -1): 
@@ -221,7 +227,6 @@ class Tripleizer:
                 elif(self.objectProperties.has_key(p)): 
                     objectProperty=self.objectProperties[p]
                 else:
-                    #TODO unset(objectProperty)
                     objectProperty = None
                 
                 if(self.config.has_key('CallbackFunctions') and self.config['CallbackFunctions'].has_key(p)):
@@ -229,7 +234,6 @@ class Tripleizer:
                     if(callable(conMethod)):
                         val = conMethod(val)
                 
-                #TODO 
                 val = str(val).encode('utf8')
     
                 prop=self.uri(p,self.ns.get('vocabulary',''))
@@ -242,99 +246,71 @@ class Tripleizer:
                 
                 self.writeTriple(subject,prop,objectN,isLiteral,dtype,lang)
         return
-    
-def conWrite(message, req):
-    if(triplify['TTL']):
-        global output
-        output += message
-    else:
-        req.write(message)
 
 def index(req):
     global baseURI, serverURI, restPath, requestURI
-    
-    #TODO 
-    #req.content_type = "text/plain"
     write = req.write
     server = req.server
     pRequest = util.FieldStorage(req)
-    dType = pRequest.get('t-output', 'text/plain')
+    dType = pRequest.get('t-output', 'plain')
     rclass = None
     rinstance = None
-    
-    if(dType == 'json'): 
-        req.content_type = 'text/javascript'
-    else:
-        req.content_type = 'text/rdf+xml'
-        
     
     serverURI = 'http://' + req.hostname + ("" if (server.port == 80) else ":"+str(server.port))
     baseURI = serverURI + req.uri.replace('index.py','')
     restPath = pRequest.get('q', '')
     requestURI = req.unparsed_uri.replace('index.py?q=','').replace('&','?')
+    req.content_type = 'text/html'
     
     if(restPath):
         r = restPath.split('/')
         rclass = r.pop(0)
         if( (rclass != 'update') and (len(r) == 1) ):
             rinstance = r.pop()
-            if( ( rclass != 'update' and r) or not rclass or rclass not in triplify['queries']):
-                write("<h1>Resource:"+rinstance+"of type:"+rclass+" not found!</h1>")
-                return apache.HTTP_NOT_FOUND
+        if( ( rclass != 'update' and r) or not rclass or rclass not in triplify['queries']):
+            write("<h1>Error 404</h1>Resource:"+ str( rinstance if rinstance else "\"NotSpecfied\" " ) +"of type:\""+rclass+"\" not found!")
+            return
     
-    #TODO
     if(dType == 'json'): 
         req.content_type = 'text/javascript'
-    if(dType == 'rdf'): 
-        req.content_type = 'text/rdf+n3'
+    elif(dType == 'plain'): 
+        req.content_type = 'text/plain'
+    else:
+        req.content_type = 'text/rdf'
     
+    # Caching
     basePath = path.dirname( __file__ )
-    """    
     m = hashlib.md5()
     m.update(requestURI)
-    
     cacheFileName = m.hexdigest()
-        
     
     cacheFileAbs = path.join(basePath,triplify['cachedir'], cacheFileName)
 
-    if(path.exists(cacheFileAbs) and path.getmtime(cacheFileAbs)-triplify['TTL'] ):
+    if(path.exists(cacheFileAbs) and path.getmtime(cacheFileAbs) > int(time.time()) - triplify.get('TTL', 0) ):
         cacheFile = open(cacheFileAbs)
         write(cacheFile.read())
-        return apache.OK
-    """
+        return
+    
     registrationFile = path.join(basePath, triplify['cachedir'], 'registered')
     if( not path.exists(registrationFile) and triplify['register']):
         url = 'http://triplify.org/register/?'+urllib.urlencode({'url':baseURI, 'type': triplify['namespaces'].get('vocabulary', '')})
-        write(url+'\n')
         try:
             registeringPage = urllib.urlopen(url)
             registeringPage.close()
-            registerfile = open(path.join(basePath, triplify['cachedir'],'register'), 'r')
+            registerfile = open(path.join(basePath, triplify['cachedir'],'register'), 'w')
             registerfile.write('')
             registerfile.close()
         except IOError:
-            write('No such file or directory')
-    
-            
-    output = ''    
+            write('')
     
     t = Tripleizer(triplify, req)
-    ######
-    #replaced buffered writing with conWrite if('TTL' in triplify):
-    ######
+    
     t.tripleize(triplify['queries'],rclass,rinstance)
-    
-    
     if(dType == 'json'):
-        #conWrite(json.JSONEncoder.encode(t.json))
-        write(json.JSONEncoder().encode(t.json))
-    #if(triplify['TTL']):
-    #    global output
-    #    cacheFile = open(cacheFileAbs, 'w')
-    #    cacheFile.write(output)
-    #    cacheFile.flush()
-    #    cacheFile.clode()
-    #write('<h1>done</h1>')
-    
-   
+        t.bufWrite(json.JSONEncoder().encode(t.json), req)
+    if('TTL' in triplify and triplify['TTL'] > 0):
+        cacheFile = open(cacheFileAbs, 'w')
+        cacheFile.write(t.output)
+        cacheFile.flush()
+        cacheFile.close()
+        req.write(t.output)

@@ -7,7 +7,7 @@ either RDF/N3, JSON or Linked Data.
 
 @version $Id:$
 @license LGPL
-@copyright 2008 Soren Auer (soeren.auer@gmail.com)
+@copyright 2008 Remon Georgy (remon.sherin@gmail.com)
 """
 import MySQLdb
 
@@ -22,7 +22,7 @@ Triplify, which has solely readable access to the columns of your database
 schema, which should be made public. Alternatively, you can include the
 configuration of your Web application and reuse its credentials here.
 """
-triplify['db'] = MySQLdb.connect(host = "localhost",user = "user",passwd = "passwd",db = "blog_database")
+triplify['db'] = MySQLdb.connect(host = "localhost",user = "user",passwd = "password",db = "database")
 
 """
 Triplify uses URIs to identify objects. In order to simplify their handling
@@ -153,7 +153,7 @@ You can specify for how long generated files should be cached. For smaller
 Web applications it is save to disable caching by setting this value to zero.
 """
 
-triplify['TTL']=0
+#triplify['TTL']=100
 """
 Directory to be used for caching
 """
@@ -164,7 +164,6 @@ Linked Data Depth
 Specify on which URI level to expose the data - possible values are:
  - Use 0 or ommit to expose all available content on the highest level
    all content will be exposed when /triplify/ is accessed on your server
-   this configuration is recommended for small to medium websites.
  - Use 1 to publish only links to the classes on the highest level and all
    content will be exposed when for example /triplify/user/ is accessed.
  - Use 2 to publish only links on highest and classes level and all
